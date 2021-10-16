@@ -1,13 +1,56 @@
-version: 2.1
+version: 2
 jobs:
   build:
-    # pre-built images: https://circleci.com/docs/2.0/circleci-images/
+    working_directory: ~/project
     docker:
-      - image: circleci/node:14-browsers
+      - image: circleci/ruby:2.7.3-node-browsers
+        environment:
+          BUNDLE_JOBS: 3
+          BUNDLE_RETRY: 3
+          BUNDLE_PATH: vendor/bundle
+          PGHOST: 127.0.0.1
+          PGUSER: ofn
+          RAILS_ENV: test
+      - image: circleci/postgres:11-alpine-ram
+        environment:
+          POSTGRES_USER: ofn
+
     steps:
       - checkout
+
       - run:
-          name: The First Step
+         name: Bundle Install
+         command: bundle check || bundle install
+
+      - run:
+          name: Yarn Install
+          command: yarn install --cache-folder ~/.cache/yarn
+
+      # Store yarn / webpacker cache
+      - save_cache:
+          key: checkout-yarn-{{ checksum "yarn.lock" }}
+          paths:
+            - ~/.cache/yarn
+
+      - run:
+          name: Wait for DB
+          command: dockerize -wait tcp://localhost:5432 -timeout 1m
+
+      - run:
+          name: Database setup
           command: |
-            echo 'Hello World!'
-            echo 'This is the delivery pipeline'
+            bin/rails db:create && bin/rails db:schema:load --trace
+
+      # Run rspec in parallel
+      - type: shell
+        command: |
+          bundle exec rspec --profile 10 \
+                            --format RspecJunitFormatter \
+                            --out test_results/rspec.xml \
+                            --format progress \
+                            $(circleci tests glob "spec/**/*_spec.rb" | circleci tests split --split-by=timings)
+
+
+      # Save test results for timing analysis
+      - store_test_results:
+          path: test_results
